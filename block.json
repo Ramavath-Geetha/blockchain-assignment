@@ -1,0 +1,32 @@
+{
+  "BlockNumber": 1,
+  "Txns": [
+    {
+      "ID": "SIM3",
+      "Value": {
+        "Val": 4,
+        "Ver": 2
+      },
+      "Valid": false
+    },
+    {
+      "ID": "SIM1",
+      "Value": {
+        "Val": 2,
+        "Ver": 1
+      },
+      "Valid": true
+    },
+    {
+      "ID": "SIM2",
+      "Value": {
+        "Val": 3,
+        "Ver": 1
+      },
+      "Valid": true
+    }
+  ],
+  "Timestamp": "2023-06-02T16:29:42.174681576+05:30",
+  "BlockStatus": "Committed",
+  "PreviousBlockHash": "0xabc123"
+}
