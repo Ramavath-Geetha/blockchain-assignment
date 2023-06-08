@@ -1,305 +1,392 @@
 package main
-
 import (
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
-	"log"
-	"sync"
-	"time"
-	"bufio"
-	"os"
-	"github.com/syndtr/goleveldb/leveldb"
-)
-//defines a custom type struct BlockStatus as an integer (int) 
-//declares two constants Committed and Pending with the values 0 and 1, respectively.
-type BlockStatus int
+    "crypto/sha256"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
+    "sync"
+    "time"
+    "bufio"
+    "strconv"
+    "strings"
+    "math/rand"
+    "math"
+    "github.com/syndtr/goleveldb/leveldb"
+) 
+// Each transaction represents with these feilds
+type Transaction struct {
+    ID       string  `json:"id"`
+    Value    float64 `json:"val"`
+    Version  float64 `json:"ver"`
+    Valid    bool    `json:"valid"`
+    Hash     string  `json:"hash"`
+    HashDone bool    `json:"-"`
+}
+
+// BlockStatus represents the status of a block.
+type BlockStatus string
 
 const (
-	Committed BlockStatus = iota
-	Pending
+    Committed BlockStatus = "committed"
+    Pending   BlockStatus = "pending"
 )
 
-// marshaling refers to the process of converting Go data structures into a JSON representation, 
-// while unmarshaling is the opposite process of converting JSON data into Go data structures.
-type Txn struct {
-	BlockNumber int    `json:"blockNumber"`
-	Key         string `json:"key"`
-	Value       Value  `json:"value"`
-	Valid       bool   `json:"valid"`
-	Hash        string `json:"hash"`
-}
-//that represents the value associated with a transaction. 
-//key names for marshaling/unmarshaling JSON.
-
-type Value struct {
-	Val int     `json:"val"`
-	Ver float64 `json:"ver"`
-}
-
-
-//represents a block in a blockchain
+// Block represents a block in the blockchain.
 type Block struct {
-	BlockNumber    int         `json:"blockNumber"`
-	PrevBlockHash  string      `json:"prevBlockHash"`
-	Txns           []Txn       `json:"txns"`
-	Timestamp      int64       `json:"timestamp"`
-	BlockStatus    BlockStatus `json:"blockStatus"`
+    BlockNumber  int           `json:"blockNumber"`
+    PreviousHash string        `json:"prevBlockHash"`
+    Transactions []Transaction `json:"txns"`
+    Timestamp    int64         `json:"timestamp"`
+    Status       BlockStatus   `json:"blockStatus"`
+    Hash         string        `json:"hash"` // New field for block hash
 }
 
-//interface with 2 methods 
-type BlockInterface interface {
-	PushTxns(txns []Txn) error
-	UpdateBlockStatus(status BlockStatus) error
+// BlockChain represents the blockchain.
+type BlockChain struct {
+    Blocks         []Block        `json:"blocks"`
+    FileName       string         `json:"-"`
+    Mutex          sync.RWMutex   `json:"-"`
+    DB             *leveldb.DB    `json:"-"`
+    HashChan       chan *Block    `json:"-"`
+    WriteChan      chan *Block    `json:"-"`
+    DoneChan       chan struct{}  `json:"-"`
+    TxnsPerBlock   int            `json:"-"`
+    CurrentBlock   *Block         `json:"-"`
+    CurrentCounter int            `json:"-"`
 }
 
-//Defines a struct BlockImpl that represents the implementation of the BlockInterface
-//representing the leveldb database
-type BlockImpl struct {
-	db *leveldb.DB
+// NewBlockChain creates a new blockchain instance.
+func NewBlockChain(fileName string, db *leveldb.DB, hashChanSize, writeChanSize, txnsPerBlock int) *BlockChain {
+    return &BlockChain{
+        Blocks:         []Block{},
+        FileName:       fileName,
+        Mutex:          sync.RWMutex{},
+        DB:             db,
+        HashChan:       make(chan *Block, hashChanSize),
+        WriteChan:      make(chan *Block, writeChanSize),
+        DoneChan:       make(chan struct{}),
+        TxnsPerBlock:   txnsPerBlock,
+        CurrentBlock:   nil,
+        CurrentCounter: 0,
+    }
 }
 
-//Defines a constructor function NewBlockImpl 
-//creates a new instance of BlockImpl with the provided LevelDB database and returns a pointer to it.
-func NewBlockImpl(db *leveldb.DB) *BlockImpl {
-	return &BlockImpl{db: db}
+// Start starts the block processing and writing to the file.
+func (bc *BlockChain) Start() {
+    go bc.processBlocks()
+    go bc.writeBlocksToFile()
 }
 
-//Implements the PushTxns method for the BlockImpl struct. It takes a slice of transactions (txns) 
-//as input and performs various operations related to transactions and LevelDB database.
+func (bc *BlockChain) processBlocks() {
+    for block := range bc.HashChan {
+        startTime := time.Now()
 
+        var wg sync.WaitGroup
+        for i := range block.Transactions {
+            wg.Add(1)
+            go func(i int) {
+                defer wg.Done()
+                txn := &block.Transactions[i]
+                txn.Hash = calculateHash(txn.ID, txn.Value, txn.Version)
+                txn.Hash = calculateSHA256Hash(txn.Hash)
+                txn.HashDone = true
+            
 
+                // Validate version
+                if txn.Version == getVersionFromLevelDB(bc.DB, txn.ID) {
+                    txn.Valid = true
+                }
+            
+            }(i)
+        }
+        wg.Wait()
 
-func (b *BlockImpl) PushTxns(txns []Txn) error {
-	
-	startTime := time.Now()
+        block.Status = Committed                           //U B T C
+        bc.WriteChan <- block                              // s t pb to c
 
-	var wg sync.WaitGroup
-	//A loop is started over the range of txns, which represents each transaction in the input slice.
-	for i := range txns {
-		//wg.Add(1) is called to add a counter to the WaitGroup to indicate that a goroutine is about to be executed.
-		wg.Add(1)
-
-		go func(i int) {
-			defer wg.Done()
-			hash := sha256.Sum256([]byte(fmt.Sprintf("%v", txns[i])))
-			txns[i].Hash = fmt.Sprintf("%x", hash)
-
-			if val, err := b.db.Get([]byte(txns[i].Key), nil); err == nil {
-				fmt.Println(string(val))
-				var value Value
-				if err := json.Unmarshal(val, &value); err == nil {
-					if value.Ver == txns[i].Value.Ver {
-				    //If they match, the transaction is considered valid, and the Valid field of the transaction is set to true
-						txns[i].Valid = true
-					//	If the transaction is valid, the updated value is stored back into the database using 
-						b.db.Put([]byte(txns[i].Key), []byte(fmt.Sprintf(`{"val":%d,"ver":%f}`, txns[i].Value.Val, txns[i].Value.Ver)), nil)
-					} else {
-						//If the version check fails or any other error occurs during the process, the Valid field of the transaction is set to false.
-						txns[i].Valid = false
-					}
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
-
-    
-	//The duration of the block processing is calculated by subtracting the startTime from the current time using time.Since(startTime).
-	duration := time.Since(startTime)
-	//processing time is converted to seconds using duration.Seconds()
-    seconds := duration.Seconds()
-	fmt.Printf("Block Number: %d\n", txns[0].BlockNumber)
-	fmt.Printf("Block Processing Time: %.6f seconds\n", seconds)
-
-	return nil
+        processingTime := time.Since(startTime)
+        log.Printf("Block %d processing time: %v\n", block.BlockNumber, processingTime) //c t pt for b&l
+    }
+    close(bc.WriteChan)
 }
 
-func (b *BlockImpl) UpdateBlockStatus(status BlockStatus) error {
-	return nil
+
+func (bc *BlockChain) writeBlocksToFile() {
+    file, err := os.OpenFile(bc.FileName, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+    if err != nil {
+        log.Fatal("Error openin file:", err)
+    }
+    defer file.Close()
+
+    for block := range bc.WriteChan {
+        // Update previous block's hash for blocks after the first one
+        if block.BlockNumber > 1 {
+            previousBlock := bc.GetBlockDetailsByNumber(block.BlockNumber - 1)
+            block.PreviousHash = previousBlock.Hash
+        }
+
+        block.Hash = calculateBlockHash(*block) // Calculate block hash
+        blockJSON, err := json.Marshal(block)
+        if err != nil {
+            log.Println("Error marshaling block to JSON:", err)
+            continue
+        }
+
+        if _, err := file.Write(blockJSON); err != nil {
+            log.Println("Error writing block to file:", err)
+        }
+
+        bc.Mutex.Lock() // acquire an exclusive write lock. 
+        bc.Blocks = append(bc.Blocks, *block) // function to add the *block
+        bc.Mutex.Unlock() //realses the lock
+    }
+
+    bc.DoneChan <- struct{}{}
 }
 
-func writeBlockToFile(blockChannel chan Block) {
-	file, err := os.OpenFile("./db/ledger.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
+//retrieves the version of a transaction stored in a LevelDB databasea
+func getVersionFromLevelDB(db *leveldb.DB, key string) float64 {
+    value, err := db.Get([]byte(key), nil)
+    if err != nil {
+        log.Println("Error retrieving value from LevelDB:", err)
+        return 0
+    }
 
-	for block := range blockChannel {
-		blockJSON, err := json.Marshal(block)
-		if err != nil {
-			log.Fatal(err)
-		}
+    var txn Transaction
+    err = json.Unmarshal(value, &txn)
+    if err != nil {
+        log.Println("Error unmarshaling stored transaction:", err)
+        return 0
+    }
 
-		if _, err := file.WriteString(string(blockJSON) + "\n"); err != nil {
-			log.Fatal(err)
-		}
-	}
+    return txn.Version
 }
 
-func getBlockByNumber(blockNumber int) (*Block, error) {
-	file, err := os.OpenFile("./db/ledger.txt", os.O_RDONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		blockJSON := scanner.Text()
-		var blk Block
-		if err := json.Unmarshal([]byte(blockJSON), &blk); err != nil {
-			return nil, err
-		}
-		if blk.BlockNumber == blockNumber {
-			return &blk, nil
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return nil, fmt.Errorf("block not found")
+func calculateHash(id string, value float64, version float64) string {
+    return fmt.Sprintf("%s-%f-%f", id, value, version)
 }
 
-func getAllBlocks() ([]Block, error) {
-	file, err := os.OpenFile("./db/ledger.txt", os.O_RDONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+// calculateBlockHash calculates the hash of a block based on its properties.
+func calculateBlockHash(block Block) string {
+    blockJSON, err := json.Marshal(block)
+    if err != nil {
+        log.Println("Error marshaling block to JSON:", err)
+        return ""
+    }
 
-	var blocks []Block
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		blockJSON := scanner.Text()
-		var block Block
-		if err := json.Unmarshal([]byte(blockJSON), &block); err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, block)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return blocks, nil
+    hash := sha256.Sum256(blockJSON)
+    return fmt.Sprintf("%x", hash)
+}
+func calculateSHA256Hash(data string) string {
+    hash := sha256.Sum256([]byte(data))
+    return fmt.Sprintf("%x", hash)
 }
 
-func main() {
-	db, err := leveldb.OpenFile("./db", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer db.Close()
+func handleUserInput(bc *BlockChain) {
+    reader := bufio.NewReader(os.Stdin)
 
-    //Setup LevelDB entries
-    for i:=1; i<=1000; i++{
-        key := fmt.Sprintf("SIM%d",i)
-        value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`,i)
-        err = db.Put([]byte(key),[]byte(value),nil)
-        if err != nil{
-            log.Println("Error putting value into LeveDB:",err)
+    for {
+        fmt.Print("Enter a block number to access details (or 'q' to quit): ")
+        input, _ := reader.ReadString('\n')
+        input = strings.TrimSpace(input)
+
+        if input == "q" {
+            break
+        }
+
+        blockNumber, err := strconv.Atoi(input)
+        if err != nil {
+            fmt.Println("Invalid block number. Please try again.")
+            continue
+        }
+
+        blockDetails := bc.GetBlockDetailsByNumber(blockNumber)
+        if blockDetails != nil {
+            fmt.Printf("Block %d details:\n", blockNumber)
+            fmt.Printf("Previous Hash: %s\n", blockDetails.PreviousHash)
+            fmt.Printf("Hash: %s\n", blockDetails.Hash)
+            fmt.Printf("Transactions: %+v\n", blockDetails.Transactions)
+            fmt.Printf("Timestamp: %d\n", blockDetails.Timestamp)
+            fmt.Printf("Status: %s\n", blockDetails.Status)
+        } else {
+            fmt.Printf("Block %d not found\n", blockNumber)
+        }
+    }
+}
+func (bc *BlockChain) PrintAllBlockDetails() {
+    fmt.Println("All block details:")
+
+    // Read the blocks from the file if the Blocks slice is empty
+    if len(bc.Blocks) == 0 {
+        err := bc.ReadBlocksFromFile()
+        if err != nil {
+            log.Println("Error reading blocks from file:", err)
+            return
         }
     }
 
-	blockImpl := NewBlockImpl(db)
+    for _, details := range bc.Blocks {
+        fmt.Printf("Block %d details:\n", details.BlockNumber)
+        fmt.Printf("Previous Hash: %s\n", details.PreviousHash)
+        fmt.Printf("Hash: %s\n", details.Hash)
+        fmt.Printf("Transactions: %+v\n", details.Transactions)
+        fmt.Printf("Timestamp: %d\n", details.Timestamp)
+        fmt.Printf("Status: %s\n", details.Status)
+        fmt.Println()
+    }
+}
+func (bc *BlockChain) ReadBlocksFromFile() error {
+    file, err := os.Open(bc.FileName)
+    if err != nil {
+        return err
+    }
+    defer file.Close()
 
-	blockChannel := make(chan Block)
-	go writeBlockToFile(blockChannel)
+    scanner := bufio.NewScanner(file)
+    for scanner.Scan() {
+        blockJSON := scanner.Bytes()
 
-	txns := []Txn{
-		{BlockNumber: 1, Key: "SIM1", Value: Value{Val: 2, Ver: 1.0}},
-		{BlockNumber: 1, Key: "SIM2", Value: Value{Val: 3, Ver: 1.0}},
-		{BlockNumber: 1, Key: "SIM3", Value: Value{Val: 4, Ver: 2.0}},
-	}
+        var block Block
+        err := json.Unmarshal(blockJSON, &block)
+        if err != nil {
+            log.Println("Error unmarshaling block from JSON:", err)
+            continue
+        }
 
-	block := Block{
-		BlockNumber:   1,
-		PrevBlockHash: "1234567",
-		Txns:          txns,
-		Timestamp:     time.Now().Unix(),
-		BlockStatus:   Pending,
-	}
+        bc.Mutex.Lock()
+        bc.Blocks = append(bc.Blocks, block)
+        bc.Mutex.Unlock()
+    }
 
-	blockChannel <- block
+    if err := scanner.Err(); err != nil {
+        return err
+    }
 
-	blockNumber := 1
-	blk, err := getBlockByNumber(blockNumber)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("Block Number: %d\n", blk.BlockNumber)
-	fmt.Printf("Previous Block Hash: %s\n", blk.PrevBlockHash)
-	// Print other block details as needed
-
-	t := time.Unix(blk.Timestamp, 0)
-	fmt.Printf("Timestamp: %v\n", t.Format("2006-01-02 15:04:05"))
-
-	blks, err := getAllBlocks()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-    block.BlockStatus = Committed
-	for _, block := range blks {
-		fmt.Printf("Block Number: %d\n", block.BlockNumber)
-        fmt.Printf("BlockStatus: %d\n",block.BlockStatus)
-		fmt.Printf("Previous Block Hash: %s\n", block.PrevBlockHash)
-		fmt.Printf("Timestamp: %v\n", time.Unix(block.Timestamp, 0).Format("2006-01-02 15:04:05"))
-		// Print other block details as needed
-		fmt.Println()
-	}
-
-	if err := blockImpl.PushTxns(block.Txns); err != nil {
-		log.Fatal(err)
-	}
-
-	blockJSON, err := json.Marshal(block)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println(string(blockJSON))
+    return nil
 }
 
 
+func main() {
+    // Open LevelDB instance
+    db, err := leveldb.OpenFile("data", nil)
+    if err != nil {
+        log.Fatal("Error opening LevelDB:", err)
+    }
+    defer db.Close()
+
+    // Setup LevelDB entries
+    for i := 1; i <= 10000; i++ {
+        key := fmt.Sprintf("SIM%d", i)
+        value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`, i)
+        err = db.Put([]byte(key), []byte(value), nil)
+        if err != nil {
+            log.Println("Error putting value into LevelDB:", err)
+        }
+    }
+
+    // Create a new blockchain
+    blockChain := NewBlockChain("ledger.txt", db, 100, 100, 1)
+    blockChain.Start()
+
+// }
+rand.Seed(time.Now().UnixNano())
 
 
 
+    // Process input transactions
+    inputTxns := make([]Transaction, 0)
 
+for j := 1; j <= 10; j++ {
+    for i := 1; i <= 5; i++ {
+        version := roundToNearest(rand.Float64()*4.0 + 1.0) // Generate a random version between 1.0 and 5.0 and round off to the nearest whole number
+        txn := Transaction{
+            ID:      fmt.Sprintf("SIM%d", i),
+            Value:   float64(i),
+            Version: version,
+        }
+        inputTxns = append(inputTxns, txn)
+    }
+}
 
+    for _, txn := range inputTxns {
+        blockChain.AddTransaction(txn)
+    }
 
+     
+        handleUserInput(blockChain)
 
+    // Wait for block processing and writing to finish
+    close(blockChain.HashChan)
+    <-blockChain.DoneChan
+   // Print details of all blocks
+    blockChain.PrintAllBlockDetails()
+    //blockChain.ReadBlocksFromFile()
+}
 
+func (bc *BlockChain) AddTransaction(txn Transaction) {
+    if bc.CurrentBlock == nil {
+        bc.CurrentBlock = &Block{
+            BlockNumber:  1,
+            PreviousHash: "000000",
+            Transactions: []Transaction{},
+            Timestamp:    time.Now().Unix(),
+            Status:       Pending,
+        }
+    }
 
+    bc.CurrentBlock.Transactions = append(bc.CurrentBlock.Transactions, txn)
+    bc.CurrentCounter++
 
+    if bc.CurrentCounter == bc.TxnsPerBlock {
+        bc.HashChan <- bc.CurrentBlock
 
+        previousBlock := bc.CurrentBlock
+        bc.CurrentBlock = &Block{
+            BlockNumber:  previousBlock.BlockNumber + 1,
+            PreviousHash: previousBlock.Hash, // Update previous hash
+            Transactions: []Transaction{},
+            Timestamp:    time.Now().Unix(),
+            Status:       Pending,
+        }
+        bc.CurrentCounter = 0
+    }
+}
 
+func (bc *BlockChain) GetBlockDetailsByNumber(blockNumber int) *Block {
+    bc.Mutex.RLock()
+    defer bc.Mutex.RUnlock()
 
+    // Check if the block number is within the range of existing blocks
+    if blockNumber < 1 || blockNumber > len(bc.Blocks) {
+        return nil
+    }
 
+    // Read the blocks from the file if the Blocks slice is empty
+    if len(bc.Blocks) == 0 {
+        err := bc.ReadBlocksFromFile()
+        if err != nil {
+            log.Println("Error reading blocks from file:", err)
+            return nil
+        }
+    }
 
+    // Get the block by block number
+    blockIndex := blockNumber - 1
+    block := &bc.Blocks[blockIndex]
 
+    // Get the previous block's details
+    if block.BlockNumber > 1 {
+        previousBlock := bc.GetBlockDetailsByNumber(blockNumber - 1)
+        if previousBlock != nil {
+            block.PreviousHash = previousBlock.Hash
+        }
+    }
 
+    return block
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// Function to round a float64 value to the nearest whole number
+func roundToNearest(x float64) float64 {
+    return math.Round(x)
+}
