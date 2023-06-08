@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb"
@@ -15,245 +20,204 @@ const (
 	Committed BlockStatus = "Committed"
 	Pending   BlockStatus = "Pending"
 )
-
 type Txn struct {
-	ID    string
-	Value struct {
-		Val float64
-		Ver float64
-	}
-	Valid bool
+	BlockNumber int    `json:"blockNumber"`
+	Key         string `json:"key"`
+	Value       Value  `json:"value"`
+	Valid       bool   `json:"valid"`
+	Hash        string `json:"hash"`
+}
+
+type Value struct {
+	Val int     `json:"val"`
+	Ver float64 `json:"ver"`
 }
 
 type Block struct {
-	BlockNumber      int
-	Txns             []Txn
-	Timestamp        time.Time
-	BlockStatus      BlockStatus
-	PreviousBlockHash string
+	BlockNumber   int          `json:"blockNumber"`
+	PrevBlockHash string       `json:"prevBlockHash"`
+	Txns          []Txn        `json:"txns"`
+	Timestamp     int64        `json:"timestamp"`
+	BlockStatus   BlockStatus  `json:"blockStatus"`
 }
 
 type BlockInterface interface {
-	PushValidTxns(txns []map[string]map[string]float64, db *leveldb.DB) error
-	UpdateBlockStatus(status BlockStatus)
+	PushTxns(txns []Txn) error
+	UpdateBlockStatus(status BlockStatus) error
 }
 
-func calculateHash(txn Txn, ch chan Txn) {
-	// Calculate hash of txn
-	// Update txn ID and valid status
-	ch <- txn
+type BlockImpl struct {
+	db *leveldb.DB
 }
 
-func (b *Block) PushValidTxns(txns []map[string]map[string]float64, db *leveldb.DB, maxTxns int, ch chan *Block) error {
-	// Create channel to receive calculated hashes
-	hashCh := make(chan Txn)
+func NewBlockImpl(db *leveldb.DB) *BlockImpl {
+	return &BlockImpl{db: db}
+}
 
-	count := 0
-	for _, txn := range txns {
-		if count >= maxTxns {
-			break
-		}
-		for key, value := range txn {
-			// Get the current value from LevelDB
-			data, err := db.Get([]byte(key), nil)
-			if err != nil {
-				return err
-			}
+func (b *BlockImpl) PushTxns(block *Block, txns []Txn) error {
+	startTime := time.Now()
 
-			var currentVal struct {
-				Val float64
-				Ver float64
-			}
-			json.Unmarshal(data, &currentVal)
+	batch := new(leveldb.Batch)
 
-			// Check if the version matches
-			valid := currentVal.Ver == value["ver"]
+	var wg sync.WaitGroup
+	var mu sync.Mutex // Mutex for synchronizing access to the txns slice
 
-			// Add the transaction to the block
-			go calculateHash(Txn{
-				ID: key,
-				Value: struct {
-					Val float64
-					Ver float64
-				}{
-					Val: value["val"],
-					Ver: value["ver"],
-				},
-				Valid: valid,
-			}, hashCh)
+	for i := range txns {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			hash := sha256.Sum256([]byte(fmt.Sprintf("%v", txns[i])))
+			txns[i].Hash = fmt.Sprintf("%x", hash)
 
-			// If the transaction is valid, update the value in LevelDB
-			if valid {
-				currentVal.Val = value["val"]
-				currentVal.Ver += 1.0
-				newData, _ := json.Marshal(currentVal)
-				err = db.Put([]byte(key), newData, nil)
-				if err != nil {
-					return err
+			if val, err := b.db.Get([]byte(txns[i].Key), nil); err == nil {
+				var dbValue Value
+				if err := json.Unmarshal(val, &dbValue); err == nil {
+					mu.Lock() // Acquire the mutex before modifying the txns slice
+					defer mu.Unlock() // Release the mutex after modifying the txns slice
+
+					if dbValue.Ver == txns[i].Value.Ver {
+						txns[i].Valid = true
+						valueJSON, err := json.Marshal(txns[i].Value)
+						if err != nil {
+							log.Println("Error marshaling value:", err)
+						}
+						batch.Put([]byte(txns[i].Key), valueJSON)
+					} else {
+						txns[i].Valid = false
+					}
 				}
 			}
-
-			count++
-			if count >= maxTxns {
-				break
-			}
-		}
+		}(i)
 	}
 
-	// Wait for all goroutines to finish and update the block's transactions
-	for i := 0; i < count; i++ {
-		txn := <-hashCh
-		b.Txns = append(b.Txns, txn)
+	wg.Wait()
+
+	// Commit the batch operation
+	if err := b.db.Write(batch, nil); err != nil {
+		return err
 	}
 
-	// Update block status
-	b.UpdateBlockStatus(Pending)
+	block.BlockStatus = Committed
 
-	// Send block to the channel for committing blocks
-	ch <- b
+	duration := time.Since(startTime)
+	seconds := duration.Seconds()
+	fmt.Printf("Block Number: %d\n", txns[0].BlockNumber)
+	fmt.Printf("Block Processing Time: %.6f seconds\n", seconds)
 
 	return nil
 }
 
-func commitBlock(commitCh chan *Block, fileCh chan *Block) {
-	// Wait for block to be ready to commit
-	block := <-commitCh
 
-	// Update block status
-	block.UpdateBlockStatus(Committed)
-
-	// Send block to the channel for writing to a file
-	fileCh <- block
+func (b *BlockImpl) UpdateBlockStatus(status BlockStatus) error {
+	return nil
 }
 
-func (b *Block) UpdateBlockStatus(status BlockStatus) {
-	b.BlockStatus = status
+func writeBlockToFile(data []byte) {
+	file, err := os.OpenFile("./db/ledger.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(string(data) + "\n"); err != nil {
+		log.Fatal(err)
+	}
 }
 
-func setupLevelDB() (*leveldb.DB, error) {
-	db, err := leveldb.OpenFile("path/to/db", nil)
+func getBlockByNumber(blockNumber int) (*Block, error) {
+	file, err := os.OpenFile("./db/ledger.txt", os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
 
-	for i := 1; i <= 1000; i++ {
-		key := fmt.Sprintf("SIM%d", i)
-		value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`, i)
-		err = db.Put([]byte(key), []byte(value), nil)
-		if err != nil {
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		blockJSON := scanner.Text()
+		var blk Block
+		if err := json.Unmarshal([]byte(blockJSON), &blk); err != nil {
 			return nil, err
 		}
+		if blk.BlockNumber == blockNumber {
+			return &blk, nil
+		}
 	}
 
-	return db, nil
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("block not found")
 }
 
-func writeBlockToFile(block *Block, file *os.File) error {
-	ledger, err := json.MarshalIndent(block, "", "  ")
+func getAllBlocks() ([]Block, error) {
+	file, err := os.OpenFile("./db/ledger.txt", os.O_RDONLY, 0644)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer file.Close()
 
-	_, err = file.Write(ledger)
-	if err != nil {
-		return err
-	}
+	var blocks []Block
 
-	_, err = file.WriteString("\n\n")
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func readBlockFromFile(file *os.File, blockNumber int) (*Block, error) {
-	decoder := json.NewDecoder(file)
-
-	for {
-		// Read a line from the file
-		block := &Block{}
-		err := decoder.Decode(block)
-		if err != nil {
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		blockJSON := scanner.Text()
+		var block Block
+		if err := json.Unmarshal([]byte(blockJSON), &block); err != nil {
 			return nil, err
 		}
-
-		// Check if the block number matches
-		if block.BlockNumber == blockNumber {
-			return block, nil
-		}
-	}
-}
-
-func readAllBlocksFromFile(file *os.File) ([]*Block, error) {
-	decoder := json.NewDecoder(file)
-	blocks := make([]*Block, 0)
-
-	for {
-		// Read a line from the file
-		block := &Block{}
-		err := decoder.Decode(block)
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return nil, err
-		}
-
 		blocks = append(blocks, block)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 
 	return blocks, nil
 }
 
 func main() {
-	db, err := setupLevelDB()
+	db, err := leveldb.OpenFile("./db", nil)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	defer db.Close()
 
-	txns := []map[string]map[string]float64{
-		{"SIM1": {"val": 2, "ver": 1.0}},
-		{"SIM2": {"val": 3, "ver": 1.0}},
-		{"SIM3": {"val": 4, "ver": 2.0}},
+	blockImpl := NewBlockImpl(db)
+
+	for j := 1; j <= 10; j++ {
+		var txns []Txn
+		for i := 1; i <= 5; i++ {
+			key := fmt.Sprintf("SIM%d", i)
+			value := Value{
+				Val: rand.Intn(1000) + 1,
+				Ver: float64(rand.Intn(2) + 1),
+			}
+			txn := Txn{
+				BlockNumber: j,
+				Key:         key,
+				Value:       value,
+			}
+			txns = append(txns, txn)
+		}
+
+		block := Block{
+			BlockNumber:   j,
+			PrevBlockHash: "1234567",
+			Txns:          txns,
+			Timestamp:     time.Now().Unix(),
+			BlockStatus:   Pending,
+		}
+
+		if err := blockImpl.PushTxns(&block, block.Txns); err != nil {
+			log.Fatal(err)
+		}
+
+		blockJSON, err := json.Marshal(block)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(string(blockJSON))
+		writeBlockToFile(blockJSON)
 	}
-
-	block := &Block{
-		BlockNumber:      1,
-		Txns:             []Txn{},
-		Timestamp:        time.Now(),
-		BlockStatus:      Pending,
-		PreviousBlockHash: "0xabc123",
-	}
-
-	// Create channel for committing blocks
-	commitCh := make(chan *Block)
-	// Create channel for writing blocks to a file
-	fileCh := make(chan *Block)
-
-	go commitBlock(commitCh, fileCh)
-
-	err = block.PushValidTxns(txns, db, 5, commitCh)
-	if err != nil {
-		panic(err)
-	}
-
-	// Wait for block to be written to a file
-	committedBlock := <-fileCh
-
-	// Open the file for writing blocks
-	file, err := os.OpenFile("blocks.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-
-	// Write the block to the file
-	err = writeBlockToFile(committedBlock, file)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Block processing time:", time.Since(block.Timestamp))
 }
