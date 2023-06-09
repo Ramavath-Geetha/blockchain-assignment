@@ -41,6 +41,14 @@ type Block struct {
     Status       BlockStatus   `json:"blockStatus"`
     Hash         string        `json:"hash"` // New field for block hash
 }
+    // Blockchain interface
+    type Blockchain interface {
+        Start()
+        PushTransaction(txn Transaction)
+        GetBlockDetailsByNumber(blockNumber int) *Block
+        PrintAllBlockDetails()
+    }
+
 
 // BlockChain represents the blockchain.
 type BlockChain struct {
@@ -74,11 +82,11 @@ func NewBlockChain(fileName string, db *leveldb.DB, hashChanSize, writeChanSize,
 
 // Start starts the block processing and writing to the file.
 func (bc *BlockChain) Start() {
-    go bc.processBlocks()
-    go bc.writeBlocksToFile()
+    go bc.blockProcessingAndWriting()
+
 }
 
-func (bc *BlockChain) processBlocks() {
+func (bc *BlockChain) blockProcessingAndWriting() {
     for block := range bc.HashChan {
         startTime := time.Now()
 
@@ -91,42 +99,36 @@ func (bc *BlockChain) processBlocks() {
                 txn.Hash = calculateHash(txn.ID, txn.Value, txn.Version)
                 txn.Hash = calculateSHA256Hash(txn.Hash)
                 txn.HashDone = true
-            
 
                 // Validate version
-                if txn.Version == getVersionFromLevelDB(bc.DB, txn.ID) {
+                if txn.Version == getTransactionVersionFromDB(bc.DB, txn.ID) {
                     txn.Valid = true
                 }
-            
             }(i)
         }
         wg.Wait()
 
-        block.Status = Committed                           //U B T C
-        bc.WriteChan <- block                              // s t pb to c
+        block.Status = Committed
+        bc.WriteChan <- block
 
         processingTime := time.Since(startTime)
-        log.Printf("Block %d processing time: %v\n", block.BlockNumber, processingTime) //c t pt for b&l
+        log.Printf("Block %d processing time: %v\n", block.BlockNumber, processingTime)
     }
     close(bc.WriteChan)
-}
 
-
-func (bc *BlockChain) writeBlocksToFile() {
     file, err := os.OpenFile(bc.FileName, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
     if err != nil {
-        log.Fatal("Error openin file:", err)
+        log.Fatal("Error opening file:", err)
     }
     defer file.Close()
 
     for block := range bc.WriteChan {
-        // Update previous block's hash for blocks after the first one
         if block.BlockNumber > 1 {
             previousBlock := bc.GetBlockDetailsByNumber(block.BlockNumber - 1)
             block.PreviousHash = previousBlock.Hash
         }
 
-        block.Hash = calculateBlockHash(*block) // Calculate block hash
+        block.Hash = calculateBlockHash(*block)
         blockJSON, err := json.Marshal(block)
         if err != nil {
             log.Println("Error marshaling block to JSON:", err)
@@ -137,16 +139,17 @@ func (bc *BlockChain) writeBlocksToFile() {
             log.Println("Error writing block to file:", err)
         }
 
-        bc.Mutex.Lock() // acquire an exclusive write lock. 
-        bc.Blocks = append(bc.Blocks, *block) // function to add the *block
-        bc.Mutex.Unlock() //realses the lock
+        bc.Mutex.Lock()
+        bc.Blocks = append(bc.Blocks, *block)
+        bc.Mutex.Unlock()
     }
 
     bc.DoneChan <- struct{}{}
 }
 
+
 //retrieves the version of a transaction stored in a LevelDB databasea
-func getVersionFromLevelDB(db *leveldb.DB, key string) float64 {
+func getTransactionVersionFromDB(db *leveldb.DB, key string) float64 {
     value, err := db.Get([]byte(key), nil)
     if err != nil {
         log.Println("Error retrieving value from LevelDB:", err)
@@ -183,7 +186,7 @@ func calculateSHA256Hash(data string) string {
     return fmt.Sprintf("%x", hash)
 }
 
-func handleUserInput(bc *BlockChain) {
+func inputFromUser(bc *BlockChain) {
     reader := bufio.NewReader(os.Stdin)
 
     for {
@@ -286,7 +289,7 @@ func main() {
     }
 
     // Create a new blockchain
-    blockChain := NewBlockChain("ledger.txt", db, 100, 100, 1)
+    blockChain := NewBlockChain("ledger.txt", db, 100, 100, 1000)
     blockChain.Start()
 
 // }
@@ -298,7 +301,7 @@ rand.Seed(time.Now().UnixNano())
     inputTxns := make([]Transaction, 0)
 
 for j := 1; j <= 10; j++ {
-    for i := 1; i <= 5; i++ {
+    for i := 1; i <= 1000; i++ {
         version := roundToNearest(rand.Float64()*4.0 + 1.0) // Generate a random version between 1.0 and 5.0 and round off to the nearest whole number
         txn := Transaction{
             ID:      fmt.Sprintf("SIM%d", i),
@@ -310,11 +313,11 @@ for j := 1; j <= 10; j++ {
 }
 
     for _, txn := range inputTxns {
-        blockChain.AddTransaction(txn)
+        blockChain.PushTransaction(txn)
     }
 
      
-        handleUserInput(blockChain)
+        inputFromUser(blockChain)
 
     // Wait for block processing and writing to finish
     close(blockChain.HashChan)
@@ -324,7 +327,7 @@ for j := 1; j <= 10; j++ {
     //blockChain.ReadBlocksFromFile()
 }
 
-func (bc *BlockChain) AddTransaction(txn Transaction) {
+func (bc *BlockChain) PushTransaction(txn Transaction) {
     if bc.CurrentBlock == nil {
         bc.CurrentBlock = &Block{
             BlockNumber:  1,
