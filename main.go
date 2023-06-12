@@ -86,7 +86,7 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 			}
 		}(i)
 	}
-	wg.Wait() /// execute the cureent goroutine until the wg counter become 0
+	wg.Wait()
 
 	if block.BlockNumber > 1 {
 		prevBlock, err := getBlockByNumber("./db/ledger.txt", block.BlockNumber-1)
@@ -140,9 +140,8 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file) //rtnlftf
-	// Increase the maximum token size to accommodate long lines
-	const maxTokenSize = 10 * 1024 * 1024 // Set the desired maximum token size (e.g., 10MB)
+	scanner := bufio.NewScanner(file)
+	const maxTokenSize = 10 * 1024 * 1024
 	buf := make([]byte, maxTokenSize)
 	scanner.Buffer(buf, maxTokenSize)
 
@@ -151,7 +150,7 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil {
 			return nil, err
 		}
-		if block.BlockNumber == blockNumber { //cbon wagbn
+		if block.BlockNumber == blockNumber {
 			if block.BlockNumber > 1 {
 				prevBlock, err := getBlockByNumber(filePath, block.BlockNumber-1)
 				if err == nil {
@@ -160,9 +159,9 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 					log.Println("Error fetching previous block:", err)
 				}
 			}
-			return &block, nil //frapotb
+			return &block, nil
 		}
-	} //// If an error occurred during scanning, the function immediately returns encounterd error
+	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
@@ -170,18 +169,17 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 	return nil, fmt.Errorf("block not found")
 }
 
-
 func fetchAllBlocks(filePath string) ([]*Block, error) {
 	file, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close() 
+	defer file.Close()
 
 	var blocks []*Block
 
 	scanner := bufio.NewScanner(file)
-	for scanner.Scan() { 
+	for scanner.Scan() {
 		var block Block
 		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil {
 			return nil, err
@@ -205,26 +203,37 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 }
 
 func main() {
+	numBlocksEnv := os.Getenv("NUM_BLOCKS")
+	numBlocks, err := strconv.Atoi(numBlocksEnv)
+	if err != nil {
+		log.Fatal("Invalid NUM_BLOCKS value:", err)
+	}
+
+	numTxnsEnv := os.Getenv("NUM_TRANSACTIONS")
+	numTxns, err := strconv.Atoi(numTxnsEnv)
+	if err != nil {
+		log.Fatal("Invalid NUM_TRANSACTIONS value:", err)
+	}
+
 	db, err := leveldb.OpenFile("db", nil)
 	if err != nil {
 		log.Fatal("Error opening LevelDB:", err)
 	}
 	defer db.Close()
 
-	for i := 1; i <= 10000; i++ {
+	for i := 1; i <= numTxns; i++ {
 		sim := fmt.Sprintf("SIM%d", i)
 		value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`, i)
 		err = db.Put([]byte(sim), []byte(value), nil)
 		if err != nil {
 			log.Println("Error putting value into LevelDB:", err)
+			continue
 		}
 	}
- ////Task 2: Declare a channel to receive blocks to be written to a file
-	blockChannel := make(chan *Block) //tpbo
 
+	blockChannel := make(chan *Block)
 
-	blockImpl := NewBlockImpl(db) //ia
-    ////Task3: On receiving the block in the channel, append the block in a file
+	blockImpl := NewBlockImpl(db)
 	go func() {
 		file, err := os.OpenFile("./db/ledger.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
@@ -244,12 +253,11 @@ func main() {
 		}
 	}()
 
-	for j := 1; j <= 10; j++ { //b
+	for j := 1; j <= numBlocks; j++ {
 		var txns []Txn
-		for i := 1; i <= 1000; i++ { //t
-			sim := fmt.Sprintf("SIM%d", (j-1)*1000+i)
+		for i := 1; i <= numTxns; i++ {
+			sim := fmt.Sprintf("SIM%d", (j-1)*numTxns+i)
 			value := Value{Val: rand.Intn(100), Ver: float64(rand.Intn(5)) + 1}
-            ////The newly created Txn struct is appended to the txns slice, which collects all the transactions for a given value of j.
 			txns = append(txns, Txn{
 				BlockNumber: j,
 				Key:         sim,
@@ -292,8 +300,8 @@ func main() {
 			}
 		} else {
 			blockNumber, err := strconv.Atoi(text)
-			if err != nil || blockNumber < 1 || blockNumber > 10 {
-				fmt.Println("Invalid input. Please enter a number between 1 and 10, or 'all' to fetch all blocks.")
+			if err != nil || blockNumber < 1 || blockNumber > numBlocks {
+				fmt.Printf("Invalid input. Please enter a number between 1 and %d, or 'all' to fetch all blocks.\n", numBlocks)
 				continue
 			}
 			block, err := getBlockByNumber("./db/ledger.txt", blockNumber)
@@ -314,3 +322,4 @@ func main() {
 func roundToNearest(x float64) float64 {
 	return math.Round(x)
 }
+//NUM_BLOCKS=10 NUM_TRANSACTIONS=5 go run main.go
