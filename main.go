@@ -56,7 +56,7 @@ type BlockImpl struct {
 }
 
 func NewBlockImpl(db *leveldb.DB) *BlockImpl {
-	return &BlockImpl{db: db}
+	return &BlockImpl{db: db} //rpsatldb
 }
 
 func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block) error {
@@ -86,7 +86,7 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 			}
 		}(i)
 	}
-	wg.Wait()
+	wg.Wait() //// execute the cureent goroutine until the wg counter become 0
 
 	if block.BlockNumber > 1 {
 		prevBlock, err := getBlockByNumber("./db/ledger.txt", block.BlockNumber-1)
@@ -95,8 +95,8 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 		} else {
 			log.Println("Error fetching previous block:", err)
 		}
-	}
-
+	} 
+        // // Calculate the hash for the current block
 	block.Hash = CalculateBlockHash(block)
 
 	block.BlockStatus = Committed
@@ -141,16 +141,17 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+    // sets up a buffer for a scanner that can hold a maximum of 10 MB
 	const maxTokenSize = 10 * 1024 * 1024
 	buf := make([]byte, maxTokenSize)
 	scanner.Buffer(buf, maxTokenSize)
 
-	for scanner.Scan() {
+	for scanner.Scan() { //rtnlftf
 		var block Block
-		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil {
+		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil { //cl
 			return nil, err
 		}
-		if block.BlockNumber == blockNumber {
+		if block.BlockNumber == blockNumber { //cbon wagbn
 			if block.BlockNumber > 1 {
 				prevBlock, err := getBlockByNumber(filePath, block.BlockNumber-1)
 				if err == nil {
@@ -159,9 +160,10 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 					log.Println("Error fetching previous block:", err)
 				}
 			}
-			return &block, nil
+			return &block, nil ////frapotb
 		}
 	}
+    //the function immediately returns encounterd error
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
@@ -194,7 +196,7 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 		}
 		blocks = append(blocks, &block)
 	}
-
+    // // If an error occurred during scanning, the function immediately returns encounterd error
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
@@ -204,7 +206,7 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 
 func main() {
 	numBlocksEnv := os.Getenv("NUM_BLOCKS")
-	numBlocks, err := strconv.Atoi(numBlocksEnv)
+	numBlocks, err := strconv.Atoi(numBlocksEnv) //string to integer
 	if err != nil {
 		log.Fatal("Invalid NUM_BLOCKS value:", err)
 	}
@@ -231,16 +233,18 @@ func main() {
 		}
 	}
 
-	blockChannel := make(chan *Block)
+    // //Task 2: Declare a channel to receive blocks to be written to a file
+	blockChannel := make(chan *Block) //tpbo
 
-	blockImpl := NewBlockImpl(db)
+	blockImpl := NewBlockImpl(db) //ia
+    // //Task3: On receiving the block in the channel, append the block in a file
 	go func() {
 		file, err := os.OpenFile("./db/ledger.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer file.Close()
-
+        // //This loop continuously listens for incoming Block pointers on the blockChannel.
 		for {
 			receivedBlock := <-blockChannel
 			blockJSON, err := json.Marshal(receivedBlock)
@@ -258,6 +262,7 @@ func main() {
 		for i := 1; i <= numTxns; i++ {
 			sim := fmt.Sprintf("SIM%d", (j-1)*numTxns+i)
 			value := Value{Val: rand.Intn(100), Ver: float64(rand.Intn(5)) + 1}
+            //  //The newly created Txn struct is appended to the txns slice, which collects all the transactions for a given value of j.
 			txns = append(txns, Txn{
 				BlockNumber: j,
 				Key:         sim,
