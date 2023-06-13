@@ -56,12 +56,10 @@ type BlockImpl struct {
 }
 
 func NewBlockImpl(db *leveldb.DB) *BlockImpl {
-	return &BlockImpl{db: db} //rpsatldb
+	return &BlockImpl{db: db}
 }
 
 func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block) error {
-	startTime := time.Now()
-
 	var wg sync.WaitGroup
 	for i := range txns {
 		wg.Add(1)
@@ -86,23 +84,19 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 			}
 		}(i)
 	}
-	wg.Wait() //// execute the cureent goroutine until the wg counter become 0
+	wg.Wait()
 
 	if block.BlockNumber > 1 {
 		prevBlock, err := getBlockByNumber("./db/ledger.txt", block.BlockNumber-1)
 		if err == nil {
-			block.PrevBlockHash = CalculateBlockHash(prevBlock)
+			block.PrevBlockHash = prevBlock.Hash
 		} else {
 			log.Println("Error fetching previous block:", err)
 		}
-	} 
-        // // Calculate the hash for the current block
+	}
 	block.Hash = CalculateBlockHash(block)
 
 	block.BlockStatus = Committed
-	duration := time.Since(startTime)
-	seconds := duration.Seconds()
-	fmt.Printf("Block Processing Time: %.6f seconds\n", seconds)
 
 	blockChannel <- block
 
@@ -113,12 +107,12 @@ func (b *BlockImpl) UpdateBlockStatus(status BlockStatus) error {
 	return nil
 }
 
-func CalculateBlockHash(block *Block) string { //tabpasinput
+func CalculateBlockHash(block *Block) string {
 	blockJSON, err := json.Marshal(block)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(blockJSON)) //hash is returned into hexadecimal string
+	return fmt.Sprintf("%x", sha256.Sum256(blockJSON))
 }
 
 func writeBlockToFile(blockJSON []byte) {
@@ -141,29 +135,25 @@ func getBlockByNumber(filePath string, blockNumber int) (*Block, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-    // sets up a buffer for a scanner that can hold a maximum of 10 MB
-	const maxTokenSize = 10 * 1024 * 1024
-	buf := make([]byte, maxTokenSize)
-	scanner.Buffer(buf, maxTokenSize)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 
-	for scanner.Scan() { //rtnlftf
+	for scanner.Scan() {
 		var block Block
-		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil { //cl
+		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil {
 			return nil, err
 		}
-		if block.BlockNumber == blockNumber { //cbon wagbn
+		if block.BlockNumber == blockNumber {
 			if block.BlockNumber > 1 {
 				prevBlock, err := getBlockByNumber(filePath, block.BlockNumber-1)
 				if err == nil {
-					block.PrevBlockHash = CalculateBlockHash(prevBlock)
+					block.PrevBlockHash = prevBlock.Hash
 				} else {
 					log.Println("Error fetching previous block:", err)
 				}
 			}
-			return &block, nil ////frapotb
+			return &block, nil
 		}
 	}
-    //the function immediately returns encounterd error
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
@@ -181,6 +171,8 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 	var blocks []*Block
 
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		var block Block
 		if err := json.Unmarshal([]byte(scanner.Text()), &block); err != nil {
@@ -189,14 +181,13 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 		if block.BlockNumber > 1 {
 			prevBlock, err := getBlockByNumber(filePath, block.BlockNumber-1)
 			if err == nil {
-				block.PrevBlockHash = CalculateBlockHash(prevBlock)
+				block.PrevBlockHash = prevBlock.Hash
 			} else {
 				log.Println("Error fetching previous block:", err)
 			}
 		}
 		blocks = append(blocks, &block)
 	}
-    // // If an error occurred during scanning, the function immediately returns encounterd error
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
@@ -205,47 +196,50 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 }
 
 func main() {
-    //Setting the environment Variables For transaction of blocks
-	numBlocksEnv := os.Getenv("NUM_BLOCKS")
-	numBlocks, err := strconv.Atoi(numBlocksEnv) //string to integer
+	// totalTransactionsEnv := os.Getenv("TOTAL_TRANSACTIONS")
+	totalTransactionsEnv := "10000"
+
+	transactionsPerBlockEnv := os.Getenv("TRANSACTIONS_PER_BLOCK")
+
+	totalTransactions, err := strconv.Atoi(totalTransactionsEnv)
 	if err != nil {
-		log.Fatal("Invalid NUM_BLOCKS value:", err)
+		log.Fatal("Invalid value for TOTAL_TRANSACTIONS:", totalTransactionsEnv)
 	}
 
-	numTxnsEnv := os.Getenv("NUM_TRANSACTIONS")
-	numTxns, err := strconv.Atoi(numTxnsEnv)
+	transactionsPerBlock, err := strconv.Atoi(transactionsPerBlockEnv)
 	if err != nil {
-		log.Fatal("Invalid NUM_TRANSACTIONS value:", err)
+		log.Fatal("Invalid value for TRANSACTIONS_PER_BLOCK:", transactionsPerBlockEnv)
 	}
+
+	numBlocks := totalTransactions / transactionsPerBlock
 
 	db, err := leveldb.OpenFile("db", nil)
 	if err != nil {
 		log.Fatal("Error opening LevelDB:", err)
 	}
 	defer db.Close()
-	//set leveldb entries
-	for i := 1; i <= numTxns; i++ {
-		sim := fmt.Sprintf("SIM%d", i)
+	//set up leveldb entries
+	for i := 1; i <= 10000; i++ {
+		key := fmt.Sprintf("SIM%d", i)
 		value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`, i)
-		err = db.Put([]byte(sim), []byte(value), nil)
+		err = db.Put([]byte(key), []byte(value), nil)
+
 		if err != nil {
 			log.Println("Error putting value into LevelDB:", err)
-			continue
 		}
 	}
 
-    // //Task 2: Declare a channel to receive blocks to be written to a file
-	blockChannel := make(chan *Block) //tpbo
+	blockChannel := make(chan *Block)
 
-	blockImpl := NewBlockImpl(db) //ia
-    // //Task3: On receiving the block in the channel, append the block in a file
+	blockImpl := NewBlockImpl(db)
+
 	go func() {
 		file, err := os.OpenFile("./db/ledger.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer file.Close()
-        // //This loop continuously listens for incoming Block pointers on the blockChannel.
+
 		for {
 			receivedBlock := <-blockChannel
 			blockJSON, err := json.Marshal(receivedBlock)
@@ -258,12 +252,12 @@ func main() {
 		}
 	}()
 
-	for j := 1; j <= numBlocks; j++ { //b
+	for j := 1; j <= numBlocks; j++ {
 		var txns []Txn
-		for i := 1; i <= numTxns; i++ { //t
-			sim := fmt.Sprintf("SIM%d", (j-1)*numTxns+i)
-			value := Value{Val: rand.Intn(100), Ver: float64(rand.Intn(5)) + 1}
-            //  //The newly created Txn struct is appended to the txns slice, which collects all the transactions for a given value of j.
+		for i := 1; i <= transactionsPerBlock; i++ {
+			sim := fmt.Sprintf("SIM%d", (j-1)*transactionsPerBlock+i)
+			value := Value{Val: rand.Intn(100),
+				Ver: roundToNearest(rand.Float64()*4.0 + 1.0)}
 			txns = append(txns, Txn{
 				BlockNumber: j,
 				Key:         sim,
@@ -289,7 +283,7 @@ func main() {
 	for {
 		fmt.Print("Enter the block number you want to fetch (1-10), or enter 'all' to fetch all blocks: ")
 		text, _ := reader.ReadString('\n')
-		text = strings.TrimSpace(text) //used to remove the whitspaces
+		text = strings.TrimSpace(text)
 		if text == "all" {
 			blocks, err := fetchAllBlocks("./db/ledger.txt")
 			if err != nil {
@@ -328,4 +322,3 @@ func main() {
 func roundToNearest(x float64) float64 {
 	return math.Round(x)
 }
-//NUM_BLOCKS=10 NUM_TRANSACTIONS=1000 go run main.go
