@@ -95,7 +95,6 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 		}
 	}
 	block.Hash = CalculateBlockHash(block)
-
 	block.BlockStatus = Committed
 
 	blockChannel <- block
@@ -196,7 +195,6 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 }
 
 func main() {
-	// totalTransactionsEnv := os.Getenv("TOTAL_TRANSACTIONS")
 	totalTransactionsEnv := "10000"
 
 	transactionsPerBlockEnv := os.Getenv("TRANSACTIONS_PER_BLOCK")
@@ -218,12 +216,11 @@ func main() {
 		log.Fatal("Error opening LevelDB:", err)
 	}
 	defer db.Close()
-	//set up leveldb entries
-	for i := 1; i <= 10000; i++ {
+
+	for i := 1; i <= totalTransactions; i++ {
 		key := fmt.Sprintf("SIM%d", i)
 		value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`, i)
 		err = db.Put([]byte(key), []byte(value), nil)
-
 		if err != nil {
 			log.Println("Error putting value into LevelDB:", err)
 		}
@@ -275,8 +272,11 @@ func main() {
 			Hash:          "",
 		}
 
-		fmt.Printf("Block Number: %d\n", j)
+		fmt.Printf("Processing Block Number: %d\n", j)
+		startTime := time.Now()
 		blockImpl.PushTxns(block, txns, blockChannel)
+		processingTime := time.Since(startTime)
+		fmt.Printf("Processing Time for Block Number %d: %s\n", j, processingTime.String())
 	}
 
 	reader := bufio.NewReader(os.Stdin)
