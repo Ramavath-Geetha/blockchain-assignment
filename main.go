@@ -113,12 +113,12 @@ func (b *BlockImpl) UpdateBlockStatus(status BlockStatus) error {
 	return nil
 }
 
-func CalculateBlockHash(block *Block) string {
+func CalculateBlockHash(block *Block) string { //tabpasinput
 	blockJSON, err := json.Marshal(block)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(blockJSON))
+	return fmt.Sprintf("%x", sha256.Sum256(blockJSON)) //hash is returned into hexadecimal string
 }
 
 func writeBlockToFile(blockJSON []byte) {
@@ -205,6 +205,7 @@ func fetchAllBlocks(filePath string) ([]*Block, error) {
 }
 
 func main() {
+    //Setting the environment Variables For transaction of blocks
 	numBlocksEnv := os.Getenv("NUM_BLOCKS")
 	numBlocks, err := strconv.Atoi(numBlocksEnv) //string to integer
 	if err != nil {
@@ -222,7 +223,7 @@ func main() {
 		log.Fatal("Error opening LevelDB:", err)
 	}
 	defer db.Close()
-
+	//set leveldb entries
 	for i := 1; i <= numTxns; i++ {
 		sim := fmt.Sprintf("SIM%d", i)
 		value := fmt.Sprintf(`{"val": %d, "ver": 1.0}`, i)
@@ -257,9 +258,9 @@ func main() {
 		}
 	}()
 
-	for j := 1; j <= numBlocks; j++ {
+	for j := 1; j <= numBlocks; j++ { //b
 		var txns []Txn
-		for i := 1; i <= numTxns; i++ {
+		for i := 1; i <= numTxns; i++ { //t
 			sim := fmt.Sprintf("SIM%d", (j-1)*numTxns+i)
 			value := Value{Val: rand.Intn(100), Ver: float64(rand.Intn(5)) + 1}
             //  //The newly created Txn struct is appended to the txns slice, which collects all the transactions for a given value of j.
@@ -288,7 +289,7 @@ func main() {
 	for {
 		fmt.Print("Enter the block number you want to fetch (1-10), or enter 'all' to fetch all blocks: ")
 		text, _ := reader.ReadString('\n')
-		text = strings.TrimSpace(text)
+		text = strings.TrimSpace(text) //used to remove the whitspaces
 		if text == "all" {
 			blocks, err := fetchAllBlocks("./db/ledger.txt")
 			if err != nil {
@@ -327,4 +328,4 @@ func main() {
 func roundToNearest(x float64) float64 {
 	return math.Round(x)
 }
-//NUM_BLOCKS=10 NUM_TRANSACTIONS=5 go run main.go
+//NUM_BLOCKS=10 NUM_TRANSACTIONS=1000 go run main.go
