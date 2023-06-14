@@ -283,11 +283,13 @@ func main() {
 		}
 
 		fmt.Printf("Processing Block Number: %d\n", j)
-		//Task 4:-Displaying processing block Time
+		
 		startTime := time.Now()
 		blockImpl.PushTxns(block, txns, blockChannel)
 		processingTime := time.Since(startTime)
-		fmt.Printf("Processing Time for Block Number %d: %s\n", j, processingTime.String())
+		processingTimeNano := processingTime.Nanoseconds() // Convert processing time to nanoseconds
+		fmt.Printf("Processing Time for Block Number %d: %d nanoseconds\n", j, processingTimeNano)
+
 	}
 
 	//read the input from the user
@@ -334,3 +336,4 @@ func main() {
 func roundToNearest(x float64) float64 {
 	return math.Round(x)
 }
+//TRANSACTIONS_PER_BLOCK=10000 go run main.go
