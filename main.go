@@ -61,10 +61,10 @@ func NewBlockImpl(db *leveldb.DB) *BlockImpl {
 }
 
 func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block) error {
-	var wg sync.WaitGroup
-	for i := range txns {
+	var wg sync.WaitGroup   //kttgstpetc 
+	for i := range txns { 
 		wg.Add(1)
-		go func(i int) {
+		go func(i int) { //etgic
 			defer wg.Done()
 			hash := sha256.Sum256([]byte(fmt.Sprintf("%v", txns[i])))
 			txns[i].Hash = fmt.Sprintf("%x", hash)
@@ -85,7 +85,7 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 			}
 		}(i)
 	}
-	wg.Wait()
+	wg.Wait() //execute the cureent goroutine until the wg counter become 0
 
 	if block.BlockNumber > 1 {
 		prevBlock, err := getBlockByNumber("./db/ledger.txt", block.BlockNumber-1)
@@ -95,10 +95,11 @@ func (b *BlockImpl) PushTxns(block *Block, txns []Txn, blockChannel chan *Block)
 			log.Println("Error fetching previous block:", err)
 		}
 	}
-	block.Hash = CalculateBlockHash(block)
+	
+	block.Hash = CalculateBlockHash(block)  //cthftcb
 	block.BlockStatus = Committed
 
-	blockChannel <- block
+	blockChannel <- block //bsthbc
 
 	return nil
 }
